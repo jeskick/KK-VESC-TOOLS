@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>VESC 测试</title>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;background:#0b0d12;color:#e8eef4;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.wrap{max-width:390px;margin:0 auto;padding:10px 12px 24px;min-height:100dvh}
+.top{display:flex;justify-content:space-between;align-items:center;padding:4px 2px 10px}
+.brand{font-size:15px;font-weight:700;letter-spacing:.04em}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px;background:#555}
+.dot.on{background:#3ddc84} .dot.warn{background:#ffb020} .dot.off{background:#f44}
+.card{background:#151922;border:1px solid #243040;border-radius:14px;padding:12px;margin:0 0 10px}
+.vin{font-size:42px;font-weight:800;line-height:1;color:#4fc3f7}
+.vin small{font-size:18px;font-weight:600;color:#9aa3b2}
+.row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:12px}
+.kpi .l{font-size:11px;color:#8b95a5;text-transform:uppercase}
+.kpi .v{font-size:18px;font-weight:700;margin-top:2px}
+.bar{height:10px;background:#1e2633;border-radius:6px;position:relative;overflow:hidden;margin-top:10px}
+.bar .mid{position:absolute;left:50%;top:0;bottom:0;width:1px;background:#6a7384}
+.bar .fill{position:absolute;top:0;bottom:0;border-radius:6px;background:#3ddc84}
+.meta{font-size:12px;color:#8b95a5;margin-top:8px}
+.warn{color:#ffb020}
+.bad{color:#ff6b6b}
+.ok{color:#3ddc84}
+h2{font-size:13px;margin:0 0 8px;color:#c5ced9;font-weight:700}
+.hint{font-size:12px;color:#8b95a5;margin:6px 0 0;line-height:1.35;overflow-wrap:anywhere}
+.grid2 button,button.primary,button.ghost,input[type=submit]{
+  border:0;border-radius:10px;padding:8px 8px;font-size:14px;font-weight:700;cursor:pointer}
+button.ghost{background:#243040;color:#e8eef4}
+.grid2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;align-items:start}
+.grid2>*{min-width:0}
+.flds{display:flex;flex-direction:column;gap:6px}
+.fld{display:grid;grid-template-columns:minmax(0,1fr) 86px;gap:8px;align-items:center}
+.fld.sel{grid-template-columns:minmax(0,.9fr) minmax(0,1.4fr)}
+.fld.dir{grid-template-columns:minmax(0,1fr) 148px}
+.top .meta{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin:0;max-width:55%}
+label{font-size:11px;color:#8b95a5;margin:0;line-height:1.25;overflow-wrap:anywhere}
+label .f{font-weight:400;color:#6a7384}
+input[type=number],input[type=file],select{
+  width:100%;max-width:100%;min-width:0;padding:6px 8px;border-radius:8px;border:1px solid #314054;
+  background:#10141c;color:#e8eef4;font-size:15px}
+.fld input[type=number]{text-align:right}
+input[type=number]{-moz-appearance:textfield;appearance:textfield}
+input[type=number]::-webkit-outer-spin-button,input[type=number]::-webkit-inner-spin-button{
+  -webkit-appearance:none;margin:0}
+select{appearance:auto}
+#wattMax{border:1px solid #e53935}
+#cutHint{margin:2px 0 0;line-height:1.35;overflow-wrap:anywhere}
+.seg{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.seg button{padding:6px 4px;font-size:13px}
+.seg button.on{background:#3ddc84;color:#111}
+button.primary,input[type=submit]{width:100%;background:#3ddc84;color:#111;margin-top:10px}
+#mcMsg{min-height:1.2em;font-size:12px;margin:8px 0 0;color:#8b95a5}
+a{color:#4fc3f7;text-decoration:none;font-size:12px}
+.lim{height:6px;background:#1e2633;border-radius:4px;overflow:hidden;margin-top:4px}
+.lim>i{display:block;height:100%;background:#4fc3f7;width:0}
+.banner{font-size:12px;background:#2a2410;color:#ffb020;border-radius:10px;padding:8px 10px;margin-bottom:10px}
+.banner.usb{background:#102a1c;color:#3ddc84}
+</style></head><body><div class="wrap">
+<div class="banner" id="demoBanner" hidden>演示模式 · 未连接电调，数据为示例。</div>
+<!--usb-only-->
+<style>
+button.warn{background:#3a2410;color:#ffb020}
+#usbCard .primary{margin-top:0}
+</style>
+<div class="card" id="usbCard" hidden>
+  <h2>USB 串口</h2>
+  <p class="hint" id="usbHint">电脑测试用，不会进 ESP32。核对 VESC Tool 前先释放，核对完关掉软件再连回来。</p>
+  <div class="grid2">
+    <button type="button" class="warn" id="btnUsbRel">释放串口</button>
+    <button type="button" class="primary" id="btnUsbOpen">重新连接</button>
+  </div>
+</div>
+<!--/usb-only-->
+<div class="top">
+  <div class="brand">VESC-TOOLS</div>
+  <div class="meta" id="link"><span class="dot" id="vescDot"></span><span id="vescTxt">等待</span></div>
+</div>
+<div class="card">
+  <div class="vin" id="vin">-- <small>V</small></div>
+  <div class="bar"><div class="mid"></div><div class="fill" id="thrFill"></div></div>
+  <div class="meta" id="thr">油门 --</div>
+  <div class="row">
+    <div class="kpi"><div class="l">功率</div><div class="v" id="pwr">--</div></div>
+    <div class="kpi"><div class="l">电池电流</div><div class="v" id="iin">--</div></div>
+    <div class="kpi"><div class="l">相电流</div><div class="v" id="imot">--</div></div>
+    <div class="kpi"><div class="l">ERPM</div><div class="v" id="rpm">--</div></div>
+    <div class="kpi"><div class="l">FET</div><div class="v" id="tfet">--</div></div>
+    <div class="kpi"><div class="l">电机</div><div class="v" id="tmot">--</div></div>
+  </div>
+  <div class="lim" title="功率占用"><i id="wBar"></i></div>
+  <div class="meta" id="meta">连接中…</div>
+</div>
+<div class="card">
+  <h2>电池</h2>
+  <div class="flds">
+    <div class="fld sel">
+      <label>电池类型 <span class="f">(si_battery_type)</span></label>
+      <select id="battType">
+        <option value="0">三元 / 软包锂电 3.0–4.2V</option>
+        <option value="1">磷酸铁锂 2.6–3.6V</option>
+        <option value="2">铅酸 2.1–2.36V</option>
+      </select>
+    </div>
+    <div class="fld"><label>串数 <span class="f">(si_battery_cells)</span></label><input id="cells" type="number" min="3" max="20" step="1"></div>
+    <div class="fld"><label>容量 Ah <span class="f">(si_battery_ah)</span></label><input id="battAh" type="number" min="0.1" step="0.1"></div>
+  </div>
+  <p class="hint" id="guessHint">串数按实时电压和电池类型打分，不限定 6/12/18，也可手改</p>
+  <div class="flds" style="margin-top:8px">
+    <div class="fld"><label>截止开始 V <span class="f">(l_battery_cut_start)</span></label><input id="cutStart" type="number" step="0.1"></div>
+    <div class="fld"><label>截止结束 V <span class="f">(l_battery_cut_end)</span></label><input id="cutEnd" type="number" step="0.1"></div>
+    <div class="fld"><label>最低电压 V <span class="f">(l_min_vin)</span></label><input id="minVin" type="number" step="0.1"></div>
+    <div class="fld"><label>最高电压 V <span class="f">(l_max_vin)</span></label><input id="maxVin" type="number" step="0.1"></div>
+    <div class="fld"><label>电池电流上限 A <span class="f">(l_in_current_max)</span></label><input id="iinmax" type="number" step="0.1"></div>
+    <div class="meta" id="cutHint">--</div>
+  </div>
+  <p class="hint" id="cellVolt">截止 3.50 / 3.30 V 每芯，电调先软切，须高于 BMS。</p>
+</div>
+<div class="card">
+  <h2>电调 · 电机</h2>
+  <div class="flds">
+    <div class="fld dir">
+      <label>电机方向 <span class="f">(m_invert_direction)</span></label>
+      <div class="seg">
+        <button type="button" class="ghost on" id="btnDirN">正向</button>
+        <button type="button" class="ghost" id="btnDirI">反向</button>
+      </div>
+    </div>
+    <div class="fld"><label>相电流上限 A <span class="f">(l_current_max)</span></label><input id="motorMax" type="number" step="1"></div>
+    <div class="fld"><label>刹车相电流 A <span class="f">(l_current_min)</span></label><input id="motorMin" type="number" step="1"></div>
+    <div class="fld"><label>最大功率 W <span class="f">(l_watt_max)</span></label><input id="wattMax" type="number" step="50" min="50"></div>
+  </div>
+  <p class="hint">刹车填负数，绝对值越大刹得越猛。红框功率是估算输入，估算时不改它、也不改方向。</p>
+  <div class="grid2" style="margin-top:10px">
+    <button type="button" class="ghost" id="btnLoad">读取电调</button>
+    <button type="button" class="ghost" id="btnGuess">按电压估算</button>
+  </div>
+  <button type="button" class="primary" id="btnSave">写入电调</button>
+  <p id="mcMsg">串数跟电压走，确认后写入。</p>
+</div>
+<div class="card" id="gpsCard">
+  <h2>GPS</h2>
+  <div class="meta" id="gps">--</div>
+</div>
+<div class="card" id="otaCard">
+  <h2>OTA</h2>
+  <form method="POST" action="/update" enctype="multipart/form-data">
+    <input type="file" name="firmware" accept=".bin" required>
+    <input type="submit" value="上传并重启">
+  </form>
+  <p class="meta" style="margin-top:10px"><a href="/tracks">轨迹</a> · <a href="/api/live">live</a> · <a href="/api/mcconf">mcconf</a></p>
+</div>
+</div>
+<script>
+const FILE = location.protocol === 'file:';
+const BRIDGES = ['http://127.0.0.1:18765','http://127.0.0.1:8765','http://127.0.0.1:8088','http://localhost:18765'];
+let API = '';
+let MODE = 'unknown';
+let lastVin = 0;
+let usbBusy = false;
+let cellsManual = false;
+const CHEM=[
+  {name:'三元锂电', full:4.20, nom:3.70, cutStart:3.50, cutEnd:3.30, min:3.00, max:4.30, lo:3.20, hi:4.22, cRate:3},
+  {name:'磷酸铁锂', full:3.65, nom:3.20, cutStart:3.00, cutEnd:2.80, min:2.60, max:3.70, lo:2.80, hi:3.65, cRate:2},
+  {name:'铅酸', full:2.40, nom:2.23, cutStart:2.15, cutEnd:2.10, min:2.00, max:2.45, lo:2.05, hi:2.45, cRate:0.5}
+];
+const ESC={vinMax:75, iInAbs:150, motorAbs:120};
+const MOTOR_W=3000, MOTOR_A=80;
+function chem(){
+  const i=parseInt(battType.value,10);
+  return CHEM[(i>=0 && i<CHEM.length)?i:0];
+}
+function $(id){return document.getElementById(id);}
+function num(id){return parseFloat($(id).value);}
+function v2(x){return (x===undefined||x===null||x===''||isNaN(x))?'':Number(x).toFixed(2);}
+function api(path){return API+path;}
+function demoLive(){
+  return {vesc:true,fw:'6.05',v_in:58.2,i_in:0.4,i_motor:1.2,rpm:0,duty:0,
+    t_fet:42,t_motor:38,fault:0,ppm:1500,pct:0,mv:1650,dir:'STOP',mode:'PWM'};
+}
+function demoMc(){
+  return {ok:true,sig:0,battery_type:0,cells:6,battery_ah:10,cut_start:21,cut_end:19.8,min_vin:18,max_vin:25.8,
+    i_in_max:80,motor_max:80,motor_min:-40,watt_max:3000,invert:0};
+}
+function packFromCells(s){
+  s=parseInt(s,10);
+  const p=chem();
+  return {
+    c:s,
+    cs:+(s*p.cutStart).toFixed(2),
+    ce:+(s*p.cutEnd).toFixed(2),
+    min:+(s*p.min).toFixed(2),
+    max:+(s*p.max).toFixed(2)
+  };
+}
+function scoreCells(v, s, p){
+  const c=v/s;
+  if(!(c>=p.min*0.90 && c<=p.full+0.08)) return -1e9;
+  let sc=0;
+  if(c>=p.lo && c<=p.hi) sc+=30;
+  else if(c>=p.min && c<=p.max) sc+=8;
+  sc-=Math.abs(c-p.nom)*12;
+  const useLo=(p.cutStart+p.nom)/2, useHi=(p.nom+p.full)/2;
+  if(c>=useLo && c<=useHi) sc+=6;
+  return sc;
+}
+function guessCells(v){
+  if(!(v>8 && v<90)) return 0;
+  const p=chem();
+  let best=0, bestSc=-1e9;
+  const cur=parseInt(cells.value,10)||0;
+  for(let s=3;s<=20;s++){
+    let sc=scoreCells(v,s,p);
+    if(s===cur && sc>-1e8) sc+=3;
+    if(sc>bestSc){bestSc=sc; best=s;}
+  }
+  if(bestSc<-100) return Math.max(3, Math.min(20, Math.round(v/p.nom)));
+  return best;
+}
+function updateCellHint(){
+  const p=chem();
+  const s=parseInt(cells.value,10)||0;
+  cellVolt.textContent=p.name+' 每芯 截止 '+p.cutStart.toFixed(2)+' / '+p.cutEnd.toFixed(2)+
+    ' V · 欠压 '+p.min.toFixed(2)+' · 过压 '+p.max.toFixed(2)+(s?(' · 满电 '+(s*p.full).toFixed(2)+' V'):'');
+}
+function applyEstimate(s){
+  s=parseInt(s,10);
+  const p=chem();
+  const watt=parseFloat(wattMax.value);
+  if(!(s>=3 && s<=20)) return {err:'串数无效'};
+  if(!(watt>0)) return {err:'先填最大功率（红框），估算用这个数'};
+  const pack=packFromCells(s);
+  const vNom=s*p.nom;
+  let iin=Math.max(5, Math.round(watt/vNom));
+  let cap='';
+  const ah=parseFloat(battAh.value);
+  if(ah>0.1){
+    const iAh=Math.max(5, Math.round(ah*p.cRate));
+    if(iAh<iin){ iin=iAh; cap='容量 '+ah+'Ah × '+p.cRate+'C'; }
+  }
+  if(iin>ESC.iInAbs){ iin=ESC.iInAbs; cap=cap||('电调电池电流 '+ESC.iInAbs+'A'); }
+  let motor=Math.round(MOTOR_A*watt/MOTOR_W);
+  motor=Math.max(20, Math.min(ESC.motorAbs, motor));
+  cells.value=pack.c;
+  cutStart.value=pack.cs; cutEnd.value=pack.ce;
+  minVin.value=pack.min; maxVin.value=pack.max;
+  iinmax.value=iin;
+  motorMax.value=motor;
+  motorMin.value=-Math.min(40, Math.round(motor*0.5));
+  updateCellHint();
+  const per=lastVin>8?(lastVin/s):p.nom;
+  let warn='';
+  if(pack.max>ESC.vinMax+0.2) warn='满电 '+pack.max.toFixed(2)+' V 超过常见 75V 电调，确认壳体电压。';
+  return {ok:true, s, watt, iin, motor, per, cap, warn, p, vNom};
+}
+function demoGps(){
+  return {fix:false,sats:0,time_valid:true,time:'04:51:41',baud:230400};
+}
+function applyBanner(){
+  const el=$('demoBanner');
+  const ota=$('otaCard');
+  const usb=$('usbCard');
+  if(MODE==='usb'){
+    el.hidden=false; el.className='banner usb';
+    el.textContent='USB 实时 · 电脑直连电调'+(API?'（桥 '+API+'）':'');
+    if(ota) ota.hidden=true;
+    if(usb) usb.hidden=false;
+  }else if(MODE==='demo'){
+    el.hidden=false; el.className='banner';
+    el.textContent='演示模式 · 未连接电调，数据为示例。运行 python tools/vesc_web_bridge.py 可拉真实数据。';
+    if(ota) ota.hidden=true;
+    if(usb) usb.hidden=true;
+  }else{
+    el.hidden=true; if(ota) ota.hidden=false; if(usb) usb.hidden=true;
+  }
+}
+function setDir(inv){
+  const on=!!inv;
+  btnDirN.className='ghost'+(on?'':' on');
+  btnDirI.className='ghost'+(on?' on':'');
+  btnDirN.dataset.inv=on?'1':'0';
+}
+function dirInv(){return btnDirN.dataset.inv==='1';}
+function setFields(j){
+  const t=parseInt(j.battery_type,10);
+  battType.value=(t>=0 && t<=2)?String(t):'0';
+  cells.value=j.cells||'';
+  battAh.value=(j.battery_ah>0? v2(j.battery_ah):'');
+  cutStart.value=v2(j.cut_start); cutEnd.value=v2(j.cut_end);
+  minVin.value=v2(j.min_vin); maxVin.value=v2(j.max_vin);
+  iinmax.value=v2(j.i_in_max); wattMax.value=Math.round(j.watt_max);
+  motorMax.value=v2(j.motor_max);
+  motorMin.value=v2(j.motor_min);
+  setDir(parseInt(j.invert,10)===1);
+  cellsManual=false;
+  updateCellHint();
+}
+async function loadMc(){
+  if(MODE==='demo'){setFields(demoMc()); mcMsg.textContent='演示模式：示例限制，未连接电调'; return;}
+  mcMsg.textContent='读取中…';
+  try{
+    const j=await (await fetch(api('/api/mcconf'))).json();
+    if(!j.ok){mcMsg.textContent=j.error||'失败'; return;}
+    setFields(j); mcMsg.textContent='已读取  sig '+j.sig;
+  }catch(e){mcMsg.textContent='读取失败';}
+}
+function buildWrite(){
+  const s=parseInt(cells.value,10);
+  const p=chem();
+  const typ=parseInt(battType.value,10);
+  if(!(s>=3 && s<=20)) return {err:'还没有串数，等电压估出来或手填'};
+  const motor=num('motorMax'), watt=num('wattMax'), iin=num('iinmax');
+  const cs=num('cutStart'), ce=num('cutEnd'), vmin=num('minVin'), vmax=num('maxVin');
+  let brake=num('motorMin');
+  if(!(motor>0 && watt>0 && iin>0)) return {err:'相电流、功率、电池电流都要大于 0'};
+  if(!(brake<0)) brake=-Math.min(40, motor*0.5);
+  const body={
+    battery_type:(typ>=0 && typ<=2)?typ:0,
+    cells:s,
+    battery_ah:num('battAh')||undefined,
+    cut_start:num('cutStart'), cut_end:num('cutEnd'),
+    min_vin:num('minVin'), max_vin:num('maxVin'),
+    i_in_max:num('iinmax'), watt_max:num('wattMax'),
+    motor_max:motor,
+    motor_min:brake,
+    invert:dirInv()?1:0
+  };
+  if(body.max_vin < s*p.full) body.max_vin=+(s*p.max).toFixed(2);
+  if(body.cut_end>=body.cut_start){body.cut_start=+(s*p.cutStart).toFixed(2); body.cut_end=+(s*p.cutEnd).toFixed(2);}
+  if(body.min_vin>=body.cut_end) body.min_vin=+(s*p.min).toFixed(2);
+  return {body};
+}
+async function saveMc(){
+  if(MODE==='demo'){mcMsg.textContent='演示模式：不会写入电调'; return;}
+  const built=buildWrite();
+  if(built.err){mcMsg.textContent=built.err; return;}
+  mcMsg.textContent='写入中…';
+  try{
+    const j=await (await fetch(api('/api/mcconf'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(built.body)})).json();
+    if(!j.ok){mcMsg.textContent=j.error||'失败'; return;}
+    setFields(j); mcMsg.textContent='已写入电调';
+  }catch(e){mcMsg.textContent='写入失败';}
+}
+btnLoad.onclick=loadMc; btnSave.onclick=saveMc;
+btnDirN.onclick=()=>setDir(0);
+btnDirI.onclick=()=>setDir(1);
+/*usb-only*/
+async function usbAct(action){
+  usbBusy=true;
+  $('usbHint').textContent=action==='release'?'正在释放串口…':'正在连接电调…';
+  try{
+    const j=await (await fetch(api('/api/usb'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})})).json();
+    if(!j.ok){$('usbHint').textContent=j.error||'失败'; return;}
+    $('usbHint').textContent=action==='release'
+      ?('已释放 '+(j.port||'')+'，现在可开 VESC Tool')
+      :('已占用 '+(j.port||'')+(j.fw?('  FW '+j.fw):''));
+    await tick();
+    if(action==='open') await loadMc();
+  }catch(e){$('usbHint').textContent='桥无响应，确认 vesc_web_bridge.py 还在跑';}
+  finally{usbBusy=false;}
+}
+if($('btnUsbRel')) $('btnUsbRel').onclick=()=>usbAct('release');
+if($('btnUsbOpen')) $('btnUsbOpen').onclick=()=>usbAct('open');
+/* /usb-only */
+battType.addEventListener('change',()=>{
+  updateCellHint();
+  mcMsg.textContent='已改电池类型。截止电压不会自动改，要用新化学体系请点「按电压估算」后再写入。';
+});
+cells.addEventListener('change',()=>{
+  const c=parseInt(cells.value,10);
+  if(!(c>=3 && c<=20)) return;
+  cellsManual=true;
+  const r=applyEstimate(c);
+  mcMsg.textContent=r.err||('已按手改 '+c+'S 和功率 '+Math.round(num('wattMax'))+' W 重算切断和电流');
+});
+btnGuess.onclick=()=>{
+  if(!(lastVin>8)){mcMsg.textContent='还没有电压，先等实时数据'; return;}
+  const cur=parseInt(cells.value,10);
+  const g=guessCells(lastVin);
+  const useManual=cellsManual && cur>=3 && cur<=20;
+  const s=useManual?cur:g;
+  if(!s){mcMsg.textContent='电压对不上所选电池类型，先核对类型或手填串数'; return;}
+  const r=applyEstimate(s);
+  if(r.err){mcMsg.textContent=r.err; wattMax.focus(); return;}
+  const how=useManual?('手改 '+s+'S'):(s+'S');
+  let extra='';
+  if(useManual && g && g!==s) extra=' · 电压更像 '+g+'S';
+  mcMsg.textContent=r.p.name+' '+lastVin.toFixed(2)+' V → '+how+'（'+r.per.toFixed(2)+' V/芯） · 功率 '+Math.round(r.watt)+
+    ' W → 电池电流 '+r.iin+' A、相电流 '+r.motor+' A'
+    +(r.cap?(' · '+r.cap):'')
+    +extra
+    +(r.warn?(' · '+r.warn):'');
+};
+function thrBar(pct){
+  const el=$('thrFill'); const p=Math.max(-100,Math.min(100,pct||0));
+  if(p>=0){el.style.left='50%'; el.style.width=(p/2)+'%'; el.style.background='#3ddc84';}
+  else {el.style.left=(50+p/2)+'%'; el.style.width=(-p/2)+'%'; el.style.background='#ff6b6b';}
+}
+function paintLive(j){
+  const ok=!!j.vesc;
+  const usbFree=j.usb==='free';
+  vescDot.className='dot '+(ok?'on':(usbFree?'warn':'off'));
+  vescTxt.textContent=usbFree
+    ?('已释放 '+(j.port||'')+' · 可开 VESC Tool')
+    :(ok?('VESC '+(j.fw||'OK')+(j.port?(' '+j.port):'')):'VESC 未连接');
+  if(MODE==='usb' && $('usbHint') && !usbBusy){
+    $('usbHint').textContent=usbFree
+      ?('已释放 '+(j.port||'')+'。关掉 VESC Tool 后再点重新连接。')
+      :('正在占用 '+(j.port||'')+'。核对软件前先点释放串口。');
+  }
+  vin.innerHTML=ok?j.v_in.toFixed(2)+' <small>V</small>':'-- <small>V</small>';
+  if(ok) lastVin=j.v_in;
+  const watts=ok?j.v_in*j.i_in:0;
+  $('pwr').textContent=ok?Math.round(watts)+' W':'--';
+  iin.textContent=ok?j.i_in.toFixed(1)+'A':'--';
+  imot.textContent=ok?j.i_motor.toFixed(1)+'A':'--';
+  rpm.textContent=ok?Math.round(j.rpm):'--';
+  tfet.textContent=ok?j.t_fet.toFixed(0)+'°':'--';
+  tmot.textContent=(ok && j.t_motor>-20)?(j.t_motor.toFixed(0)+'°'):'--';
+  thr.textContent='油门 '+j.ppm+' µs  ·  '+(j.pct>=0?'+':'')+j.pct+'%  '+j.dir+'  ·  '+j.mode;
+  thrBar(j.pct);
+  const wmax=parseFloat(wattMax.value)||3000;
+  wBar.style.width=Math.min(100,Math.max(0,watts/wmax*100))+'%';
+  const cs=parseFloat(cutStart.value), ce=parseFloat(cutEnd.value);
+  if(ok && cs>1){
+    cutHint.className='meta'+(j.v_in<=ce?' bad':(j.v_in<=cs?' warn':' ok'));
+    cutHint.textContent=j.v_in.toFixed(2)+' V · 切 '+ce.toFixed(2)+' / 限 '+cs.toFixed(2);
+  }
+  const g=ok?guessCells(j.v_in):0;
+  const cur=parseInt(cells.value,10)||0;
+  if(ok && g){
+    const per=(j.v_in/g);
+    guessHint.className='hint'+(cur && cur!==g?' warn':'');
+    guessHint.textContent='当前 '+j.v_in.toFixed(2)+' V ≈ '+g+'S（'+per.toFixed(2)+' V/芯）'
+      +(cur && cur!==g?'  · 电调里是 '+cur+'S':'');
+  }
+  let m='FW '+j.fw+' · '+j.mode;
+  if(ok && g) m+=' · 估 '+g+'S';
+  if(j.fault) m+=' · FAULT '+j.fault;
+  meta.textContent=m;
+  meta.className='meta'+(j.fault?' bad':'');
+}
+function paintGps(g){
+  gps.textContent=(g.fix?'定位':'无定位')+'  SAT '+g.sats+'  '+(g.time_valid?g.time:'--:--:--')+'  '+g.baud+'bps';
+}
+async function tick(){
+  if(MODE==='demo'){paintLive(demoLive()); return;}
+  try{
+    paintLive(await (await fetch(api('/api/live'),{cache:'no-store'})).json());
+  }catch(e){meta.textContent='网络断开'; vescDot.className='dot off';}
+}
+async function tickGps(){
+  if(MODE==='usb'){gps.textContent='USB 直连电调 · 无板载 GPS'; return;}
+  if(MODE==='demo'){paintGps(demoGps()); return;}
+  try{
+    paintGps(await (await fetch(api('/api/gps'),{cache:'no-store'})).json());
+  }catch(e){gps.textContent='GPS 无数据';}
+}
+async function probeLive(base){
+  const r=await fetch((base||'')+'/api/live',{cache:'no-store'});
+  if(!r.ok) throw new Error('bad');
+  return r.json();
+}
+async function boot(){
+  if(!FILE){
+    try{
+      const j=await probeLive('');
+      MODE=(location.hostname==='127.0.0.1'||location.hostname==='localhost')?'usb':'board';
+      API='';
+      applyBanner(); paintLive(j); await loadMc(); tickGps();
+      setInterval(tick,300); setInterval(tickGps,2000);
+      return;
+    }catch(e){}
+  }
+  for(const b of BRIDGES){
+    try{
+      const j=await probeLive(b);
+      MODE='usb'; API=b;
+      applyBanner(); paintLive(j); await loadMc(); tickGps();
+      setInterval(tick,300); setInterval(tickGps,2000);
+      return;
+    }catch(e){}
+  }
+  MODE='demo';
+  applyBanner();
+  paintLive(demoLive()); setFields(demoMc()); paintGps(demoGps());
+  setInterval(()=>paintLive(demoLive()),300);
+}
+boot();
+</script>
+</body></html>
