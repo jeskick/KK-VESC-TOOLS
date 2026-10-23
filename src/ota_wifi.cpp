@@ -2,6 +2,8 @@
 
 #include "live_status.h"
 #include "vesc_uart.h"
+#include "vesc_now.h"
+#include "pins.h"
 #include "gps_log.h"
 #include "gps_nmea.h"
 #include "sd_probe.h"
@@ -448,8 +450,14 @@ static void stopWifi() {
   apActive = false;
   wifiClosed = true;
   WiFi.softAPdisconnect(true);
-  WiFi.mode(WIFI_OFF);
-  setStatus("WiFi off (idle timeout or cmd)");
+  if (vescUartLinkMode() == VESC_LINK_NOW) {
+    WiFi.mode(WIFI_STA);
+    vescNowKeepChannel();
+    setStatus("WiFi AP off, NOW stays");
+  } else {
+    WiFi.mode(WIFI_OFF);
+    setStatus("WiFi off (idle timeout or cmd)");
+  }
 }
 
 static void startAp() {
@@ -457,7 +465,8 @@ static void startAp() {
   clientSeen = false;
   apStartMs = millis();
 
-  WiFi.mode(WIFI_AP);
+  const bool now = (vescUartLinkMode() == VESC_LINK_NOW);
+  WiFi.mode(now ? WIFI_AP_STA : WIFI_AP);
   WiFi.setSleep(false);
 
   IPAddress ip(192, 168, 4, 1);
@@ -465,7 +474,8 @@ static void startAp() {
   IPAddress subnet(255, 255, 255, 0);
   WiFi.softAPConfig(ip, gateway, subnet);
 
-  if (!WiFi.softAP(kApSsid, kApPass)) {
+  const int ch = now ? NOW_CHANNEL : 1;
+  if (!WiFi.softAP(kApSsid, kApPass, ch, 0, 4)) {
     setStatus("AP start failed");
     wifiClosed = true;
     return;
@@ -474,13 +484,21 @@ static void startAp() {
   snprintf(ipCache, sizeof(ipCache), "%s", WiFi.softAPIP().toString().c_str());
   apActive = true;
   startServices();
+  if (now) {
+    vescNowKeepChannel();
+  }
   snprintf(statusText, sizeof(statusText), "AP %s %s", kApSsid, ipCache);
-  Serial.printf("# ota: SoftAP ssid=%s pass=%s ip=%s (auto-off 60s if no client)\n", kApSsid,
-                kApPass, ipCache);
+  Serial.printf("# ota: SoftAP ssid=%s pass=%s ip=%s ch=%d%s\n", kApSsid, kApPass, ipCache, ch,
+                now ? " +ESP-NOW" : "");
 }
 
 void otaWifiInit() {
   startAp();
+}
+
+void otaWifiStop() {
+  stopWifi();
+  setStatus("WiFi off");
 }
 
 void otaWifiLoop() {

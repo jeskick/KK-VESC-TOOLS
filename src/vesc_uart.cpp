@@ -1,7 +1,8 @@
 #include "vesc_uart.h"
 
 #include "pins.h"
-#include "vesc_ble.h"
+#include "ota_wifi.h"
+#include "vesc_now.h"
 
 #include <Arduino.h>
 #include <HardwareSerial.h>
@@ -41,34 +42,34 @@ static VescLinkMode linkMode = VESC_LINK_WIRE;
 static bool linkStarted = false;
 
 static uint32_t linkTimeoutMs() {
-  return (linkMode == VESC_LINK_BLE) ? 4000u : 2500u;
+  return (linkMode == VESC_LINK_NOW) ? 3500u : 2500u;
 }
 
 static uint32_t syncTimeoutMs() {
-  return (linkMode == VESC_LINK_BLE) ? 4000u : 2500u;
+  return (linkMode == VESC_LINK_NOW) ? 3500u : 2500u;
 }
 
 static const char *linkTag() {
-  return (linkMode == VESC_LINK_BLE) ? "ble" : "uart";
+  return (linkMode == VESC_LINK_NOW) ? "now" : "uart";
 }
 
 static size_t linkWrite(const uint8_t *data, size_t len) {
-  if (linkMode == VESC_LINK_BLE) {
-    return vescBleWrite(data, len) ? len : 0;
+  if (linkMode == VESC_LINK_NOW) {
+    return vescNowWrite(data, len) ? len : 0;
   }
   return VescSerial.write(data, len);
 }
 
 static int linkAvailable() {
-  if (linkMode == VESC_LINK_BLE) {
-    return vescBleAvailable();
+  if (linkMode == VESC_LINK_NOW) {
+    return vescNowAvailable();
   }
   return VescSerial.available();
 }
 
 static int linkRead() {
-  if (linkMode == VESC_LINK_BLE) {
-    return vescBleRead();
+  if (linkMode == VESC_LINK_NOW) {
+    return vescNowRead();
   }
   return VescSerial.read();
 }
@@ -83,6 +84,31 @@ static void sendPacket(uint8_t cmd, const uint8_t *data, size_t dataLen) {
 
 static void sendCommand(uint8_t cmd) {
   sendPacket(cmd, nullptr, 0);
+}
+
+static void writeBeI32(uint8_t *p, int32_t v) {
+  const uint32_t u = (uint32_t)v;
+  p[0] = (uint8_t)(u >> 24);
+  p[1] = (uint8_t)(u >> 16);
+  p[2] = (uint8_t)(u >> 8);
+  p[3] = (uint8_t)u;
+}
+
+void vescUartSetDuty(float duty) {
+  if (duty > 0.95f) {
+    duty = 0.95f;
+  } else if (duty < -0.95f) {
+    duty = -0.95f;
+  }
+  uint8_t data[4];
+  writeBeI32(data, (int32_t)(duty * 100000.0f));
+  sendPacket(COMM_SET_DUTY, data, 4);
+}
+
+void vescUartZeroDuty() {
+  uint8_t data[4];
+  writeBeI32(data, 0);
+  sendPacket(COMM_SET_DUTY, data, 4);
 }
 
 static void handlePayload(const uint8_t *payload, size_t len) {
@@ -166,6 +192,9 @@ static void setErr(char *err, size_t errLen, const char *msg) {
 }
 
 static bool fetchMcconfInternal(VescBatteryLimits *limits, char *err, size_t errLen) {
+  if (linkMode == VESC_LINK_NOW) {
+    vescUartZeroDuty();
+  }
   pollPaused = true;
   delay(30);
   drainRx();
@@ -349,12 +378,12 @@ static void applyLink() {
   fwVersion[0] = '\0';
   vescPacketParserReset();
 
-  if (linkMode == VESC_LINK_BLE) {
+  if (linkMode == VESC_LINK_NOW) {
     VescSerial.end();
-    vescBleBegin();
-    Serial.printf("# VESC link BLE → %s\n", VESC_BLE_NAME);
+    vescNowBegin();
+    Serial.printf("# VESC link ESP-NOW → %s ch=%d\n", VESC_BLE_NAME, NOW_CHANNEL);
   } else {
-    vescBleEnd();
+    vescNowEnd();
     beginUart();
   }
   linkStarted = true;
@@ -379,27 +408,21 @@ VescLinkMode vescUartLinkMode() {
 
 const char *vescUartLinkStatus() {
   if (linkMode == VESC_LINK_WIRE) {
-    return vescUartConnected() ? "有线 已连接" : "有线 UART";
+    return vescUartConnected() ? "WIRE linked" : "WIRE UART";
   }
-  const char *st = vescBleState();
+  const char *st = vescNowState();
   if (strcmp(st, "ok") == 0) {
-    return vescUartConnected() ? "无线 已连接" : "无线 等待电调";
+    return vescUartConnected() ? "NOW linked" : "NOW wait VESC";
   }
-  if (strcmp(st, "scan") == 0) {
-    return "无线 扫描 KK_VESC_BLE";
+  if (strcmp(st, "wait") == 0) {
+    return "NOW scan KK-VESC-BLE";
   }
-  if (strcmp(st, "conn") == 0) {
-    return "无线 正在连接";
-  }
-  if (strcmp(st, "fail") == 0) {
-    return "无线 未找到";
-  }
-  return "无线 BLE";
+  return "NOW";
 }
 
 void vescUartLoop() {
-  if (linkMode == VESC_LINK_BLE) {
-    vescBleLoop();
+  if (linkMode == VESC_LINK_NOW) {
+    vescNowLoop();
   }
   pollRx();
   const uint32_t now = millis();
@@ -426,9 +449,10 @@ void vescUartLoop() {
     sendCommand(COMM_FW_VERSION);
   }
 
-  // One-shot MCCONF cache for TFT voltage thresholds (after link is stable)
-  if (!pollPaused && !cachedLimits.valid && !limitsFetchTried && vescUartConnected() &&
-      lastValues.valid && now - lastRxMs < 500) {
+  // One-shot MCCONF cache for TFT voltage thresholds (after link is stable).
+  // Skip while ESP-NOW is driving SET_DUTY — awaitCmd would stall the keep-alive.
+  if (!pollPaused && linkMode != VESC_LINK_NOW && !cachedLimits.valid && !limitsFetchTried &&
+      vescUartConnected() && lastValues.valid && now - lastRxMs < 500) {
     if (limitsFetchAtMs == 0) {
       limitsFetchAtMs = now;
     } else if (now - limitsFetchAtMs >= 1500) {

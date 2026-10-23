@@ -6,13 +6,19 @@ struct DashboardInput {
   bool vescLinkOk;
   bool vescLinkBle;
   const char *vescLinkStatus;
+  const char *vescBlePhase;
+  const char *vescBleHint;
+  bool nowRssiOk;
+  int8_t nowRssi;  // dBm, valid only if nowRssiOk
   bool vescValid;
   float voltageV;
   float currentInA;
+  float currentMotorA;
   float powerW;
   float speedKmh;
   float batteryPct;  // <0 if unknown — from VESC SETUP battery_level
   float tempFetC;
+  float tempMotorC;
   float cutStartV;
   float cutEndV;
   float rpm;     // eRPM from VESC GET_VALUES
@@ -65,7 +71,7 @@ struct DashboardInput {
   // 0=main 1=settings 2=trip 3=throttle cal 4=sd test
   uint8_t uiScreen;
   int8_t statsSel;  // settings / trip / cal step select
-  uint8_t dataPage;  // main screen page: 0 VESC, 1 GPS (LEFT/RIGHT)
+  uint8_t dataPage;  // 0 VESC, 1 GPS, 2 compass, 3 RT scope
   bool forceData;   // show the data screen even without a VESC link
   const char *outModeLabel;  // "PWM" / "CPPM"
   uint8_t outThrottleCh;     // 1..4 when CPPM

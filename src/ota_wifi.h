@@ -9,6 +9,7 @@
 // SoftAP: SSID ESP32S3-OTA, pass 12345678, IP 192.168.4.1
 // Auto-off if no client connects within 60s after boot.
 void otaWifiInit();
+void otaWifiStop();
 void otaWifiLoop();
 bool otaWifiConnected();
 const char *otaWifiIp();

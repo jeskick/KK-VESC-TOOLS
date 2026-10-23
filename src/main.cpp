@@ -5,6 +5,7 @@
 #include "ota_wifi.h"
 #include "tft_dashboard.h"
 #include "vesc_uart.h"
+#include "vesc_now.h"
 #include "live_status.h"
 #include "keypad.h"
 #include "gps_log.h"
@@ -51,7 +52,7 @@ static uint32_t runtimeLastSaveMs = 0;
 static uint8_t uiScreen = 0;  // 0 main, 1 settings, 2 trip, 3 thr cal
 static int8_t statsSel = 0;
 static uint8_t dataPage = 0;  // main screen: 0 VESC, 1 GPS, 2 compass (LEFT/RIGHT)
-static const uint8_t kDataPages = 3;
+static const uint8_t kDataPages = 4;
 static int draftCalC = -1, draftCalF = -1, draftCalR = -1;
 static float mvFilt = 0.0f;
 static bool mvFiltInit = false;
@@ -331,15 +332,15 @@ static VescLinkMode loadVescLink() {
   prefs.begin("vesc", true);
   const uint8_t m = prefs.getUChar("link", (uint8_t)VESC_LINK_WIRE);
   prefs.end();
-  return (m == (uint8_t)VESC_LINK_BLE) ? VESC_LINK_BLE : VESC_LINK_WIRE;
+  return (m == (uint8_t)VESC_LINK_NOW) ? VESC_LINK_NOW : VESC_LINK_WIRE;
 }
 
 static void toggleVescLink() {
   const VescLinkMode next =
-      (vescUartLinkMode() == VESC_LINK_BLE) ? VESC_LINK_WIRE : VESC_LINK_BLE;
+      (vescUartLinkMode() == VESC_LINK_NOW) ? VESC_LINK_WIRE : VESC_LINK_NOW;
   saveVescLink(next);
   vescUartSetLinkMode(next);
-  Serial.printf("# vesc link -> %s\n", next == VESC_LINK_BLE ? "BLE" : "WIRE");
+  Serial.printf("# vesc link -> %s\n", next == VESC_LINK_NOW ? "NOW" : "WIRE");
 }
 
 static void saveOutMode() {
@@ -768,13 +769,19 @@ static void updateTftDashboard(int localPpm, int pct) {
 
   DashboardInput d = {};
   d.vescLinkOk = vescUartConnected();
-  d.vescLinkBle = (vescUartLinkMode() == VESC_LINK_BLE);
+  d.vescLinkBle = (vescUartLinkMode() == VESC_LINK_NOW);
   d.vescLinkStatus = vescUartLinkStatus();
+  d.vescBlePhase = vescNowState();
+  d.vescBleHint = vescNowHint();
+  d.nowRssiOk = vescNowRssiOk();
+  d.nowRssi = vescNowRssi();
   d.vescValid = vescOk;
   if (vescOk) {
     d.voltageV = v->voltageInV;
     d.currentInA = v->currentInA;
+    d.currentMotorA = v->currentMotorA;
     d.tempFetC = v->tempFetC;
+    d.tempMotorC = v->tempMotorC;
     d.powerW = v->voltageInV * v->currentInA;
     d.fault = v->fault;
     d.rpm = v->rpm;
@@ -1004,6 +1011,21 @@ void loop() {
   }
   const int pct = ppmToThrottlePct(ppm);
   applyThrottleChannels(ppm);
+
+  // GPIO2 PPM/PWM is unchanged. UART duty is extra, and only in ESP-NOW
+  // so a wired PPM cable to the VESC does not fight SET_DUTY.
+  if (vescUartLinkMode() == VESC_LINK_NOW && vescNowLinked()) {
+    static uint32_t lastDutyMs = 0;
+    const uint32_t nowDuty = millis();
+    if (nowDuty - lastDutyMs >= 20) {
+      lastDutyMs = nowDuty;
+      float duty = 0.0f;
+      if (ppm >= 1520 || ppm <= 1480) {
+        duty = (float)(ppm - 1500) / 500.0f;
+      }
+      vescUartSetDuty(duty);
+    }
+  }
 
   vescUartLoop();
   otaWifiLoop();

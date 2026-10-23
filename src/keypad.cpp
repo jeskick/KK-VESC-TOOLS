@@ -90,6 +90,12 @@ void keypadInit() {
   refreshHeld();
 }
 
+void keypadRebindPins() {
+  for (size_t i = 0; i < kKeyCount; i++) {
+    claimPin(kKeys[i].pin);
+  }
+}
+
 void keypadLoop() {
   const uint32_t t = millis();
   if (lastSampleMs != 0 && (t - lastSampleMs) < kSampleMs) {

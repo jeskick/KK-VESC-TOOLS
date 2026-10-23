@@ -4,6 +4,7 @@
 
 #include <Arduino.h>
 #include <NimBLEDevice.h>
+#include <stdarg.h>
 #include <string.h>
 
 static const NimBLEUUID kNusSvc("6e400001-b5a3-f393-e0a9-e50e24dcca9e");
@@ -25,15 +26,71 @@ static TaskHandle_t bleTaskH = nullptr;
 static volatile bool bleWant = false;
 static volatile bool bleOk = false;
 static volatile uint8_t blePhase = 0;  // 0 off 1 scan 2 conn 3 ok 4 fail
+static char bleHint[48] = "";
+static NimBLEAddress foundAddr;
+static volatile bool foundHave = false;
+static volatile int scanHits = 0;
+static char seenNames[48] = "";
+
+static void setHint(const char *s) {
+  snprintf(bleHint, sizeof(bleHint), "%s", s ? s : "");
+}
+
+static void blog(const char *fmt, ...) {
+  char buf[192];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  Serial.println(buf);
+  Serial0.println(buf);
+}
+
+static void normName(const char *in, char *out, size_t outLen) {
+  size_t j = 0;
+  bool space = false;
+  for (size_t i = 0; in && in[i] && j + 1 < outLen; i++) {
+    char c = in[i];
+    if (c == '\0') {
+      break;
+    }
+    if (c >= 'A' && c <= 'Z') {
+      c = (char)(c - 'A' + 'a');
+    }
+    if (c == ' ' || c == '_' || c == '-' || c == '\t') {
+      if (j == 0 || space) {
+        continue;
+      }
+      space = true;
+      out[j++] = ' ';
+      continue;
+    }
+    space = false;
+    out[j++] = c;
+  }
+  while (j > 0 && out[j - 1] == ' ') {
+    j--;
+  }
+  out[j] = '\0';
+}
 
 static bool nameMatch(const std::string &n) {
   if (n.empty()) {
     return false;
   }
-  if (n == VESC_BLE_NAME) {
+  char got[48];
+  char want[40];
+  normName(n.c_str(), got, sizeof(got));
+  normName(VESC_BLE_NAME, want, sizeof(want));
+  if (got[0] == '\0') {
+    return false;
+  }
+  if (strstr(got, want) != nullptr) {
     return true;
   }
-  return n.rfind("KK_VESC", 0) == 0;
+  // Official dongle: "VESC BLE UART A1:B2" or "VESC BUILTIN BLE"
+  return strstr(got, "vesc") != nullptr &&
+         (strstr(got, "uart") != nullptr || strstr(got, "ble") != nullptr);
 }
 
 static void ringPush(const uint8_t *data, size_t len) {
@@ -106,9 +163,11 @@ static bool pickChars(NimBLEClient *c) {
     }
   }
   if (!wrChar || !ntChar) {
+    setHint("gatt: no uart char");
     return false;
   }
-  if (!ntChar->subscribe(true, notifyCb, true)) {
+  if (!ntChar->subscribe(true, notifyCb, false) && !ntChar->subscribe(true, notifyCb, true)) {
+    setHint("gatt: notify fail");
     return false;
   }
   return true;
@@ -116,61 +175,109 @@ static bool pickChars(NimBLEClient *c) {
 
 static bool tryConnect(const NimBLEAddress &addr) {
   blePhase = 2;
+  setHint("connecting...");
   if (client == nullptr) {
     client = NimBLEDevice::createClient();
     client->setClientCallbacks(&clientCb, false);
-    client->setConnectTimeout(8);
+    client->setConnectTimeout(10);
   }
   if (client->isConnected()) {
     client->disconnect();
     delay(200);
   }
+  blog("# BLE connecting %s type=%u", addr.toString().c_str(), (unsigned)addr.getType());
   if (!client->connect(addr, true)) {
+    setHint("connect fail");
+    blog("# BLE connect fail");
     return false;
   }
   if (!pickChars(client)) {
     client->disconnect();
+    blog("# BLE gatt fail");
     return false;
   }
   ringClear();
   bleOk = true;
   blePhase = 3;
-  Serial.printf("# VESC BLE connected %s\n", addr.toString().c_str());
+  setHint("ble ok");
+  blog("# BLE connected %s", addr.toString().c_str());
   return true;
 }
 
-static bool scanAndConnect() {
-  blePhase = 1;
-  NimBLEScan *scan = NimBLEDevice::getScan();
-  scan->setActiveScan(true);
-  scan->setInterval(45);
-  scan->setWindow(30);
-  NimBLEScanResults results = scan->start(5, false);
-  NimBLEAddress found;
-  bool have = false;
-  for (int i = 0; i < results.getCount(); i++) {
-    NimBLEAdvertisedDevice d = results.getDevice(i);
-    if (nameMatch(d.getName())) {
-      found = d.getAddress();
-      have = true;
-      Serial.printf("# VESC BLE saw %s %s\n", d.getName().c_str(), found.toString().c_str());
-      break;
+class ScanCb : public NimBLEAdvertisedDeviceCallbacks {
+  void onResult(NimBLEAdvertisedDevice *d) override {
+    if (d == nullptr) {
+      return;
+    }
+    scanHits++;
+    const std::string nm = d->getName();
+    const bool nus = d->isAdvertisingService(kNusSvc);
+    blog("# BLE adv '%s' %s%s", nm.c_str(), d->getAddress().toString().c_str(), nus ? " NUS" : "");
+    if (seenNames[0] == '\0' && !nm.empty()) {
+      snprintf(seenNames, sizeof(seenNames), "%s", nm.c_str());
+    }
+    if (nameMatch(nm)) {
+      foundAddr = d->getAddress();
+      foundHave = true;
+      snprintf(seenNames, sizeof(seenNames), "%s", nm.c_str());
+      NimBLEDevice::getScan()->stop();
+    } else if (nus && !foundHave) {
+      foundAddr = d->getAddress();
+      foundHave = true;
+      if (seenNames[0] == '\0') {
+        snprintf(seenNames, sizeof(seenNames), "NUS");
+      }
     }
   }
+};
+
+static ScanCb scanCb;
+
+static bool scanAndConnect() {
+  blePhase = 1;
+  foundHave = false;
+  scanHits = 0;
+  seenNames[0] = '\0';
+  setHint("scanning...");
+  NimBLEScan *scan = NimBLEDevice::getScan();
+  scan->stop();
   scan->clearResults();
-  if (!have) {
+  scan->setAdvertisedDeviceCallbacks(&scanCb, false);
+  scan->setActiveScan(true);
+  scan->setInterval(80);
+  scan->setWindow(80);
+  scan->setDuplicateFilter(false);
+  scan->start(10, false);
+  blog("# BLE scan done hits=%d have=%d name='%s'", scanHits, (int)foundHave, seenNames);
+  if (!foundHave) {
     blePhase = 4;
+    if (scanHits <= 0) {
+      setHint("scan 0: power-cycle dongle");
+    } else if (seenNames[0]) {
+      char line[48];
+      snprintf(line, sizeof(line), "saw %d: %s", scanHits, seenNames);
+      setHint(line);
+    } else {
+      char line[48];
+      snprintf(line, sizeof(line), "saw %d unnamed", scanHits);
+      setHint(line);
+    }
     return false;
   }
-  return tryConnect(found);
+  char line[48];
+  snprintf(line, sizeof(line), "found %s", seenNames[0] ? seenNames : foundAddr.toString().c_str());
+  setHint(line);
+  return tryConnect(foundAddr);
 }
 
 static void bleTask(void *arg) {
   (void)arg;
-  NimBLEDevice::init("");
+  Serial0.begin(115200);
+  delay(200);
+  NimBLEDevice::init("kk-vesc");
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
   NimBLEDevice::setMTU(247);
-  Serial.printf("# VESC BLE scan for %s\n", VESC_BLE_NAME);
+  blog("# VESC BLE scan for %s", VESC_BLE_NAME);
 
   while (bleWant) {
     if (!bleOk) {
@@ -209,7 +316,7 @@ void vescBleBegin() {
   blePhase = 1;
   ringClear();
   if (bleTaskH == nullptr) {
-    xTaskCreatePinnedToCore(bleTask, "vescble", 6144, nullptr, 1, &bleTaskH, 0);
+    xTaskCreatePinnedToCore(bleTask, "vescble", 8192, nullptr, 1, &bleTaskH, 0);
   }
 }
 
@@ -281,4 +388,8 @@ const char *vescBleState() {
   default:
     return "off";
   }
+}
+
+const char *vescBleHint() {
+  return bleHint;
 }

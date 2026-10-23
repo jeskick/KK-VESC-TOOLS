@@ -20,6 +20,8 @@ enum KeyAction : uint8_t {
 
 void keypadInit();
 void keypadLoop();
+// Re-apply input pull-ups without dropping queued clicks (TFT rotation can remux pads).
+void keypadRebindPins();
 
 KeyId keypadHeld();
 const char *keypadHeldLabel();

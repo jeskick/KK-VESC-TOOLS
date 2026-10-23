@@ -80,8 +80,9 @@
 #define VESC_UART_RX 42  // ← VESC TX
 #define VESC_UART_TX 41  // → VESC RX
 #define VESC_UART_BAUD 115200
-// Wireless: BLE UART dongle on the VESC serial header, advertised name:
-#define VESC_BLE_NAME "KK_VESC_BLE"
+// Wireless: ESP-NOW UART bridge KK-VESC-BLE (same channel as the bridge firmware).
+#define NOW_CHANNEL 1
+#define VESC_BLE_NAME "KK-VESC-BLE"
 
 // ── GPS M10G-5883 (UBLOX-M10050 + QMC5883L), 5V (right header 16-17) ──
 // PPS LED: solid = power/no fix, blink = 3D fix.

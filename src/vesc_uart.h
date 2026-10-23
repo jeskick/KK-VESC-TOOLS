@@ -3,7 +3,7 @@
 #include "vesc_protocol.h"
 #include "vesc_mcconf.h"
 
-enum VescLinkMode : uint8_t { VESC_LINK_WIRE = 0, VESC_LINK_BLE = 1 };
+enum VescLinkMode : uint8_t { VESC_LINK_WIRE = 0, VESC_LINK_NOW = 1 };
 
 void vescUartInit(VescLinkMode mode);
 void vescUartSetLinkMode(VescLinkMode mode);
@@ -15,6 +15,8 @@ const VescValues *vescUartValues();
 const VescSetupValues *vescUartSetupValues();
 const char *vescUartFwVersion();
 float vescUartDecodedPpm();
+void vescUartSetDuty(float duty);
+void vescUartZeroDuty();
 float vescErpmToKmh(float erpm);
 bool vescUartHandleCommand(const char *line);
 

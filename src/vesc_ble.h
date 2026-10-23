@@ -12,3 +12,4 @@ int vescBleRead();
 bool vescBleConnected();
 // "off" / "scan" / "conn" / "ok" / "fail"
 const char *vescBleState();
+const char *vescBleHint();

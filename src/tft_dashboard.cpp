@@ -1,5 +1,6 @@
 #include "tft_dashboard.h"
 
+#include "keypad.h"
 #include "pins.h"
 
 #include <Arduino.h>
@@ -296,7 +297,54 @@ static uint16_t gaugeBandColor(float kmh) {
   return C_GREEN;
 }
 
-static const uint8_t kPageCount = 3;
+static const uint8_t kPageCount = 4;
+
+static constexpr int kScopeN = 120;
+static int16_t scopeIin[kScopeN];
+static int16_t scopeImot[kScopeN];
+static int16_t scopeW[kScopeN];
+static uint8_t scopeHead = 0;
+static uint8_t scopeCount = 0;
+static uint32_t scopeLastMs = 0;
+
+static void scopePush(const DashboardInput *in) {
+  const uint32_t now = millis();
+  if (now - scopeLastMs < 100) {
+    return;
+  }
+  scopeLastMs = now;
+  if (in == nullptr || !in->vescValid) {
+    return;
+  }
+  int iin = (int)lroundf(in->currentInA * 10.0f);
+  int imot = (int)lroundf(in->currentMotorA * 10.0f);
+  int w = (int)lroundf(fabsf(in->powerW));
+  if (iin < -20000) {
+    iin = -20000;
+  }
+  if (iin > 20000) {
+    iin = 20000;
+  }
+  if (imot < -20000) {
+    imot = -20000;
+  }
+  if (imot > 20000) {
+    imot = 20000;
+  }
+  if (w < 0) {
+    w = 0;
+  }
+  if (w > 30000) {
+    w = 30000;
+  }
+  scopeIin[scopeHead] = (int16_t)iin;
+  scopeImot[scopeHead] = (int16_t)imot;
+  scopeW[scopeHead] = (int16_t)w;
+  scopeHead = (uint8_t)((scopeHead + 1) % kScopeN);
+  if (scopeCount < kScopeN) {
+    scopeCount++;
+  }
+}
 
 /** Which main-screen page is live. Sits in the gap above the throttle strip. */
 static void drawPageDots(uint8_t page) {
@@ -389,12 +437,39 @@ static uint16_t tempColor(float t) {
   return C_TEMP;
 }
 
+static bool landOn = false;
+static constexpr int LAND_W = 320;
+static constexpr int LAND_H = 240;
+static lgfx::LGFX_Sprite landSpr(&tft);
+static bool landSprOk = false;
+static lgfx::LGFXBase *g = &canvas;
+
+static void setCanvasLand(bool on) {
+  if (landOn == on) {
+    return;
+  }
+  landOn = on;
+  tft.setRotation(on ? 1 : 0);
+  tft.fillScreen(C_BG);
+  if (on) {
+    g = landSprOk ? (lgfx::LGFXBase *)&landSpr : (lgfx::LGFXBase *)&tft;
+  } else {
+    g = &canvas;
+  }
+  keypadRebindPins();
+}
+
 void tftDashboardInit() {
   tft.init();
   tft.setRotation(0);
   tft.setBrightness(255);
   canvas.setColorDepth(16);
   canvas.createSprite(240, 320);
+  landSpr.setColorDepth(16);
+  landSpr.setPsram(true);
+  landSprOk = landSpr.createSprite(LAND_W, LAND_H);
+  landOn = false;
+  g = &canvas;
   ready = true;
   canvas.fillScreen(C_BG);
   canvas.pushSprite(0, 0);
@@ -528,16 +603,26 @@ static void drawIdleScreen(const DashboardInput *in) {
   canvas.setTextColor(C_MUTE);
   const int dots = (int)((t / 350) % 4);
   char status[20];
-  if (!in->vescLinkOk) {
-    if (in->vescLinkBle) {
-      snprintf(status, sizeof(status), "NO BLE%.*s", dots, "...");
+  if (in->vescLinkBle) {
+    const char *p = in->vescBlePhase ? in->vescBlePhase : "";
+    if (in->vescLinkOk || strcmp(p, "ok") == 0) {
+      snprintf(status, sizeof(status), "WAITING%.*s", dots, "...");
+    } else if (strcmp(p, "wait") == 0) {
+      snprintf(status, sizeof(status), "SCAN NOW%.*s", dots, "...");
     } else {
-      snprintf(status, sizeof(status), "NO WIRE%.*s", dots, "...");
+      snprintf(status, sizeof(status), "NO NOW%.*s", dots, "...");
     }
+  } else if (!in->vescLinkOk) {
+    snprintf(status, sizeof(status), "NO WIRE%.*s", dots, "...");
   } else {
     snprintf(status, sizeof(status), "WAITING%.*s", dots, "...");
   }
   canvas.drawString(status, cx, yBelow);
+  if (in->vescLinkBle && in->vescBleHint && in->vescBleHint[0]) {
+    canvas.setTextSize(1);
+    canvas.setTextColor(C_YELLOW);
+    canvas.drawString(in->vescBleHint, cx, yBelow + 18);
+  }
 
   {
     char line[28];
@@ -551,13 +636,14 @@ static void drawIdleScreen(const DashboardInput *in) {
     char hms[12];
     canvas.setTextSize(2);
     canvas.setTextColor(C_MUTE);
+    const int yOff = (in->vescLinkBle && in->vescBleHint && in->vescBleHint[0]) ? 16 : 0;
     fmtHms(hms, sizeof(hms), in->totalRunSec);
     snprintf(line, sizeof(line), "TOTAL %s", hms);
-    canvas.drawString(line, cx, yBelow + 22);
+    canvas.drawString(line, cx, yBelow + 22 + yOff);
     fmtHms(hms, sizeof(hms), in->sessionSec);
     snprintf(line, sizeof(line), "SESS  %s", hms);
     canvas.setTextColor(in->vescLinkOk ? C_SPEED : C_DIM);
-    canvas.drawString(line, cx, yBelow + 44);
+    canvas.drawString(line, cx, yBelow + 44 + yOff);
   }
 
   drawThrottleRow(in);
@@ -882,6 +968,240 @@ static void drawCompassScreen(const DashboardInput *in) {
   canvas.pushSprite(0, 0);
 }
 
+static void drawRtCell(int x, int y, const char *lab, const char *val, uint16_t vc) {
+  g->setTextDatum(textdatum_t::top_left);
+  g->setTextSize(1);
+  g->setTextColor(C_MUTE);
+  g->drawString(lab, x, y);
+  g->setTextSize(2);
+  g->setTextColor(vc);
+  g->drawString(val, x, y + 10);
+}
+
+static void drawScopeTrace(int plotX, int plotY, int plotW, int plotH, const int16_t *buf,
+                           float scale, uint16_t color) {
+  if (scopeCount < 2 || scale < 0.1f) {
+    return;
+  }
+  int prevX = plotX;
+  int prevY = plotY + plotH - 1;
+  for (int i = 0; i < scopeCount; i++) {
+    const int idx = (scopeHead - scopeCount + i + kScopeN * 2) % kScopeN;
+    float v = fabsf((float)buf[idx]);
+    int y = plotY + plotH - 1 - (int)(v / scale * (float)(plotH - 1));
+    if (y < plotY) {
+      y = plotY;
+    }
+    if (y > plotY + plotH - 1) {
+      y = plotY + plotH - 1;
+    }
+    const int x = plotX + (scopeCount <= 1 ? 0 : i * (plotW - 1) / (scopeCount - 1));
+    if (i > 0) {
+      g->drawLine(prevX, prevY, x, y, color);
+    }
+    prevX = x;
+    prevY = y;
+  }
+}
+
+static void drawLandBar(int x, int y, int w, int h, int ppm) {
+  g->fillRoundRect(x, y, w, h, 3, C_BAR_BG);
+  const int mid = x + w / 2;
+  g->drawFastVLine(mid, y + 2, h - 4, C_MUTE);
+  const int pct = constrain((ppm - 1500) / 5, -100, 100);
+  const int half = (w / 2) - 4;
+  if (pct > 0) {
+    const int bw = half * pct / 100;
+    if (bw > 0) {
+      g->fillRoundRect(mid + 1, y + 2, bw, h - 4, 2, C_GREEN);
+    }
+  } else if (pct < 0) {
+    const int bw = half * (-pct) / 100;
+    if (bw > 0) {
+      g->fillRoundRect(mid - bw, y + 2, bw, h - 4, 2, C_REV);
+    }
+  }
+}
+
+static void drawRtScopeScreen(const DashboardInput *in) {
+  g->fillScreen(C_BG);
+  char buf[20];
+  const bool ok = in->vescValid;
+  const uint16_t vc = ok ? C_TEXT : C_DIM;
+
+  auto cell = [&](int x, const char *lab, const char *val, uint16_t c) {
+    drawRtCell(x, 2, lab, val, c);
+  };
+
+  if (ok) {
+    snprintf(buf, sizeof(buf), "%4.1f", (double)in->voltageV);
+  } else {
+    snprintf(buf, sizeof(buf), "--.-");
+  }
+  cell(2, "VIN", buf, ok ? voltColor(classifyVolt(in)) : C_DIM);
+
+  if (ok) {
+    snprintf(buf, sizeof(buf), "%4.1f", (double)fabsf(in->currentInA));
+  } else {
+    snprintf(buf, sizeof(buf), "--.-");
+  }
+  cell(66, "IIN", buf, ok ? C_AMP : C_DIM);
+
+  if (ok) {
+    snprintf(buf, sizeof(buf), "%4.1f", (double)fabsf(in->currentMotorA));
+  } else {
+    snprintf(buf, sizeof(buf), "--.-");
+  }
+  cell(130, "MOT", buf, ok ? C_SPEED : C_DIM);
+
+  if (ok) {
+    snprintf(buf, sizeof(buf), "%d", (int)lroundf(fabsf(in->powerW)));
+  } else {
+    snprintf(buf, sizeof(buf), "----");
+  }
+  cell(194, "W", buf, ok ? C_WATT : C_DIM);
+
+  if (ok) {
+    snprintf(buf, sizeof(buf), "%d%%", (int)constrain((int)lroundf(fabsf(in->duty) * 100.0f), 0, 99));
+  } else {
+    snprintf(buf, sizeof(buf), "--");
+  }
+  cell(258, "DUTY", buf, vc);
+
+  if (ok) {
+    const long rpm = (long)lroundf(fabsf(in->rpm));
+    if (rpm >= 10000) {
+      snprintf(buf, sizeof(buf), "%ldk", rpm / 1000);
+    } else {
+      snprintf(buf, sizeof(buf), "%ld", rpm);
+    }
+  } else {
+    snprintf(buf, sizeof(buf), "----");
+  }
+  drawRtCell(2, 34, "eRPM", buf, ok ? C_SEC : C_DIM);
+
+  if (ok && tempValid(in->tempFetC)) {
+    snprintf(buf, sizeof(buf), "%dC", (int)lroundf(in->tempFetC));
+  } else {
+    snprintf(buf, sizeof(buf), "--C");
+  }
+  drawRtCell(66, 34, "FET", buf, ok ? tempColor(in->tempFetC) : C_DIM);
+
+  if (ok && tempValid(in->tempMotorC)) {
+    snprintf(buf, sizeof(buf), "%dC", (int)lroundf(in->tempMotorC));
+  } else {
+    snprintf(buf, sizeof(buf), "--C");
+  }
+  drawRtCell(130, 34, "MOTOR", buf, ok ? tempColor(in->tempMotorC) : C_DIM);
+
+  if (ok) {
+    snprintf(buf, sizeof(buf), "%4.1f", (double)in->speedKmh);
+  } else {
+    snprintf(buf, sizeof(buf), "--.-");
+  }
+  drawRtCell(194, 34, "km/h", buf, ok ? C_SPEED : C_DIM);
+
+  if (ok) {
+    snprintf(buf, sizeof(buf), "%d", (int)in->throttlePct);
+  } else {
+    snprintf(buf, sizeof(buf), "--");
+  }
+  drawRtCell(258, 34, "THR", buf, vc);
+
+  if (in->fault) {
+    g->setTextDatum(textdatum_t::top_right);
+    g->setTextSize(1);
+    g->setTextColor(C_RED);
+    snprintf(buf, sizeof(buf), "F%u", (unsigned)in->fault);
+    g->drawString(buf, LAND_W - EDGE, 2);
+  }
+
+  const int plotX = 22;
+  const int plotY = 68;
+  const int plotW = LAND_W - plotX - 28;
+  const int plotH = 140;
+
+  g->drawRect(plotX - 1, plotY - 1, plotW + 2, plotH + 2, 0x39E7);
+  g->drawFastHLine(plotX, plotY + plotH / 2, plotW, 0x2104);
+  g->drawFastHLine(plotX, plotY + plotH / 4, plotW, 0x2104);
+  g->drawFastHLine(plotX, plotY + (plotH * 3) / 4, plotW, 0x2104);
+
+  float maxI = 10.0f;
+  float maxW = 200.0f;
+  for (int i = 0; i < scopeCount; i++) {
+    const int idx = (scopeHead - scopeCount + i + kScopeN * 2) % kScopeN;
+    const float iin = fabsf((float)scopeIin[idx]) * 0.1f;
+    const float imot = fabsf((float)scopeImot[idx]) * 0.1f;
+    const float w = (float)scopeW[idx];
+    if (iin > maxI) {
+      maxI = iin;
+    }
+    if (imot > maxI) {
+      maxI = imot;
+    }
+    if (w > maxW) {
+      maxW = w;
+    }
+  }
+  maxI *= 1.15f;
+  maxW *= 1.15f;
+
+  drawScopeTrace(plotX, plotY, plotW, plotH, scopeIin, maxI * 10.0f, C_AMP);
+  drawScopeTrace(plotX, plotY, plotW, plotH, scopeImot, maxI * 10.0f, C_SPEED);
+  drawScopeTrace(plotX, plotY, plotW, plotH, scopeW, maxW, C_WATT);
+
+  g->setTextDatum(textdatum_t::top_left);
+  g->setTextSize(1);
+  g->setTextColor(C_AMP);
+  g->drawString("Iin", plotX, plotY - 10);
+  g->setTextColor(C_SPEED);
+  g->drawString("Imot", plotX + 28, plotY - 10);
+  g->setTextColor(C_WATT);
+  g->drawString("W", plotX + 62, plotY - 10);
+  g->setTextColor(C_DIM);
+  g->drawString("12s", plotX + 80, plotY - 10);
+
+  g->setTextColor(C_MUTE);
+  snprintf(buf, sizeof(buf), "%.0fA", (double)maxI);
+  g->setTextDatum(textdatum_t::top_right);
+  g->drawString(buf, plotX - 2, plotY);
+  snprintf(buf, sizeof(buf), "%.0fW", (double)maxW);
+  g->drawString(buf, LAND_W - EDGE, plotY);
+  g->setTextDatum(textdatum_t::bottom_right);
+  g->drawString("0", plotX - 2, plotY + plotH);
+
+  const int footerY = 220;
+  const int cx = LAND_W / 2;
+  for (int i = 0; i < (int)kPageCount; i++) {
+    const int x = cx - 5 * ((int)kPageCount - 1) + i * 10;
+    if (i == (int)in->dataPage) {
+      g->fillCircle(x, footerY - 6, 2, C_SPEED);
+    } else {
+      g->drawCircle(x, footerY - 6, 2, C_DIM);
+    }
+  }
+
+  const char *dir = in->throttleDir ? in->throttleDir : "STOP";
+  uint16_t dirC = C_MUTE;
+  if (strcmp(dir, "FWD") == 0) {
+    dirC = C_GREEN;
+  } else if (strcmp(dir, "REV") == 0) {
+    dirC = C_REV;
+  }
+  g->setTextDatum(textdatum_t::top_left);
+  g->setTextSize(2);
+  g->setTextColor(dirC);
+  g->drawString(dir, EDGE, footerY);
+  g->setTextColor(C_TEXT);
+  snprintf(buf, sizeof(buf), "%+d%%", in->throttlePct);
+  g->drawString(buf, EDGE + 60, footerY);
+  drawLandBar(140, footerY, LAND_W - EDGE - 140, 16, in->throttlePpm);
+
+  if (landSprOk) {
+    landSpr.pushSprite(0, 0);
+  }
+}
+
 static void drawStatsScreen(const DashboardInput *in) {
   canvas.fillScreen(C_BG);
   char line[36];
@@ -945,63 +1265,116 @@ static void drawStatsScreen(const DashboardInput *in) {
 }
 
 static void drawSettingsScreen(const DashboardInput *in) {
+  static const int kHeaderH = 26;
+  static const int kFooterH = 30;
+  static const int kCount = 11;
+  static const int kRowH = (320 - kHeaderH - kFooterH) / kCount;
+
   canvas.fillScreen(C_BG);
-  canvas.setTextDatum(textdatum_t::top_center);
+  canvas.setFont(&fonts::Font0);
   canvas.setTextSize(2);
+  const int fh = glyphH(2);
+
+  canvas.fillRect(0, 0, SCREEN_W, kHeaderH, 0x10A2);
+  canvas.setTextDatum(textdatum_t::middle_center);
   canvas.setTextColor(C_SPEED);
-  canvas.drawString("SETTINGS", SCREEN_W / 2, 6);
+  canvas.drawString("SETTINGS", SCREEN_W / 2, kHeaderH / 2);
+  canvas.drawFastHLine(0, kHeaderH - 1, SCREEN_W, 0x39C7);
 
-  char linkLine[28];
-  char modeLine[28];
-  char chLine[28];
-  char dataLine[28];
-  char trackLine[28];
-  char revLine[28];
-  char magLine[28];
-  snprintf(linkLine, sizeof(linkLine), "VESC %s", in->vescLinkBle ? "无线" : "有线");
-  snprintf(modeLine, sizeof(modeLine), "OUT %s", in->outModeLabel ? in->outModeLabel : "?");
-  snprintf(chLine, sizeof(chLine), "CPPM CH %u", (unsigned)in->outThrottleCh);
-  snprintf(dataLine, sizeof(dataLine), "DATA VIEW %s", in->forceData ? "ON" : "AUTO");
-  snprintf(trackLine, sizeof(trackLine), "TRACK LOG %s", in->trackLogOn ? "ON" : "OFF");
-  snprintf(revLine, sizeof(revLine), "THR REVERSE %s", in->thrReverse ? "ON" : "OFF");
-  snprintf(magLine, sizeof(magLine), "MAG ROT %u", (unsigned)in->magYawDeg);
+  char linkVal[8];
+  char revVal[8];
+  char modeVal[8];
+  char chVal[8];
+  char trackVal[8];
+  char dataVal[8];
+  char magVal[8];
+  snprintf(linkVal, sizeof(linkVal), "%s", in->vescLinkBle ? "NOW" : "WIRE");
+  snprintf(revVal, sizeof(revVal), "%s", in->thrReverse ? "ON" : "OFF");
+  snprintf(modeVal, sizeof(modeVal), "%s", in->outModeLabel ? in->outModeLabel : "-");
+  snprintf(chVal, sizeof(chVal), "%u", (unsigned)in->outThrottleCh);
+  snprintf(trackVal, sizeof(trackVal), "%s", in->trackLogOn ? "ON" : "OFF");
+  snprintf(dataVal, sizeof(dataVal), "%s", in->forceData ? "ON" : "AUTO");
+  snprintf(magVal, sizeof(magVal), "%u", (unsigned)in->magYawDeg);
 
-  const char *items[11] = {
-      linkLine,  "TRIP STATS", "THROTTLE CAL", revLine,  modeLine,
-      chLine,    "SD TEST",    trackLine,      dataLine, magLine,
-      "BACK",
+  const char *labels[kCount] = {
+      "Link", "Trip", "Thr cal", "Reverse", "Output", "CPPM ch",
+      "SD",   "Track", "Data",    "Compass", "Back",
   };
-  const int n = 11;
-  const int sel = (in->statsSel < 0) ? 0 : (in->statsSel >= n ? n - 1 : in->statsSel);
-  const int rowH = 22;
-  const int baseY = 26;
-  canvas.setTextDatum(textdatum_t::top_left);
-  for (int i = 0; i < n; i++) {
-    const int y = baseY + i * rowH;
+  const char *values[kCount] = {
+      linkVal, ">", ">", revVal, modeVal, chVal, ">", trackVal, dataVal, magVal, nullptr,
+  };
+
+  const int sel = (in->statsSel < 0) ? 0 : (in->statsSel >= kCount ? kCount - 1 : in->statsSel);
+  for (int i = 0; i < kCount; i++) {
+    const int y = kHeaderH + i * kRowH;
     const bool on = (i == sel);
     if (on) {
-      canvas.fillRect(EDGE, y - 4, SCREEN_W - 2 * EDGE, rowH - 4, 0x2124);
-      canvas.drawRect(EDGE, y - 4, SCREEN_W - 2 * EDGE, rowH - 4, C_SPEED);
+      canvas.fillRect(4, y + 1, SCREEN_W - 8, kRowH - 2, 0x2124);
+      canvas.drawRect(4, y + 1, SCREEN_W - 8, kRowH - 2, C_SPEED);
+    } else if (i == kCount - 1) {
+      canvas.drawFastHLine(12, y + 1, SCREEN_W - 24, 0x2104);
     }
+    const int textY = y + (kRowH - fh) / 2;
     canvas.setTextSize(2);
+    canvas.setTextDatum(textdatum_t::top_left);
     canvas.setTextColor(on ? C_YELLOW : C_TEXT);
-    canvas.drawString(items[i], EDGE + 10, y + 4);
+    canvas.drawString(labels[i], 12, textY);
+    if (values[i] != nullptr && values[i][0] != '\0') {
+      canvas.setTextDatum(textdatum_t::top_right);
+      canvas.setTextColor(on ? C_YELLOW : C_SPEED);
+      canvas.drawString(values[i], SCREEN_W - 12, textY);
+    }
   }
 
+  canvas.fillRect(0, 320 - kFooterH, SCREEN_W, kFooterH, 0x10A2);
+  canvas.drawFastHLine(0, 320 - kFooterH, SCREEN_W, 0x39C7);
   canvas.setTextSize(1);
-  canvas.setTextDatum(textdatum_t::top_center);
-  if (sel == 0) {
-    canvas.setTextColor(C_MUTE);
-    canvas.drawString(in->vescLinkStatus ? in->vescLinkStatus : "", SCREEN_W / 2, 288);
-  } else if (in->thrCalReady) {
-    canvas.setTextColor(C_GREEN);
-    char line[40];
-    snprintf(line, sizeof(line), "CAL C%d F%d R%d", in->thrCalCenter, in->thrCalFwd, in->thrCalRev);
-    canvas.drawString(line, SCREEN_W / 2, 288);
-  } else {
-    canvas.setTextColor(C_MUTE);
-    canvas.drawString("CAL not set", SCREEN_W / 2, 288);
+  canvas.setTextDatum(textdatum_t::middle_center);
+  canvas.setTextColor(C_MUTE);
+  const char *hint = "";
+  char calHint[40];
+  switch (sel) {
+  case 0:
+    hint = in->vescLinkStatus ? in->vescLinkStatus : "";
+    break;
+  case 1:
+    hint = "trip stats";
+    break;
+  case 2:
+    if (in->thrCalReady) {
+      snprintf(calHint, sizeof(calHint), "cal %d / %d / %d", in->thrCalCenter, in->thrCalFwd,
+               in->thrCalRev);
+      hint = calHint;
+    } else {
+      hint = "throttle not calibrated";
+    }
+    break;
+  case 3:
+    hint = "swap fwd / rev";
+    break;
+  case 4:
+    hint = "GPIO2 PWM or CPPM";
+    break;
+  case 5:
+    hint = "CPPM throttle channel";
+    break;
+  case 6:
+    hint = "probe microSD";
+    break;
+  case 7:
+    hint = in->trackState ? in->trackState : "";
+    break;
+  case 8:
+    hint = "show data without VESC";
+    break;
+  case 9:
+    hint = "mount 0/90/180/270";
+    break;
+  default:
+    hint = "back to main";
+    break;
   }
+  canvas.drawString(hint ? hint : "", SCREEN_W / 2, 320 - kFooterH / 2);
   canvas.pushSprite(0, 0);
 }
 
@@ -1122,6 +1495,9 @@ void tftDashboardUpdate(const DashboardInput *in) {
     return;
   }
 
+  scopePush(in);
+  setCanvasLand(in->uiScreen == 0 && in->dataPage == 3);
+
   if (in->uiScreen == 1) {
     drawSettingsScreen(in);
     return;
@@ -1146,6 +1522,10 @@ void tftDashboardUpdate(const DashboardInput *in) {
   }
   if (in->dataPage == 2) {
     drawCompassScreen(in);
+    return;
+  }
+  if (in->dataPage == 3) {
+    drawRtScopeScreen(in);
     return;
   }
 
@@ -1179,6 +1559,27 @@ void tftDashboardUpdate(const DashboardInput *in) {
     canvas.setTextSize(2);
     canvas.setTextColor(satC);
     canvas.drawString(buf, EDGE, 14);
+
+    if (in->vescLinkBle) {
+      canvas.setTextSize(1);
+      canvas.setTextColor(C_MUTE);
+      canvas.drawString("RF", EDGE, 32);
+      canvas.setTextSize(2);
+      if (in->nowRssiOk) {
+        uint16_t rfC = C_RED;
+        if (in->nowRssi >= -60) {
+          rfC = C_GREEN;
+        } else if (in->nowRssi >= -75) {
+          rfC = C_YELLOW;
+        }
+        canvas.setTextColor(rfC);
+        snprintf(buf, sizeof(buf), "%d", (int)in->nowRssi);
+      } else {
+        canvas.setTextColor(C_DIM);
+        snprintf(buf, sizeof(buf), "%s", "--");
+      }
+      canvas.drawString(buf, EDGE, 42);
+    }
   }
 
   // ——— Speed (keep size 9) ———
